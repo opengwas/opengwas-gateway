@@ -1,0 +1,24 @@
+# Gateway dependencies
+# Pin minor versions; update deliberately.
+
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1          # standard pulls uvloop + httptools for performance
+
+# Async HTTP proxy client
+httpx==0.28.0
+
+# Neo4j async driver
+neo4j==5.26.0
+
+# Redis (async client for pub/sub + rate limit storage)
+redis[hiredis]==5.2.0              # hiredis is a fast C-extension parser
+
+# JWT
+PyJWT[crypto]==2.10.0              # crypto pulls cryptography for RS256
+
+# Rate limiting (same underlying library as flask-limiter in the monolith)
+limits==3.13.0
+
+# IP anonymisation (same as monolith)
+anonymizeip==1.0.0
