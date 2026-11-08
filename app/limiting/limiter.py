@@ -90,8 +90,10 @@ def check_rate_limit(request: Request) -> JSONResponse | None:
     is exceeded. Attaches rate-limit stats to request.state.rate_limit_stats so
     the proxy layer can add the response headers.
     """
-    # No-rate-limit test key bypass.
-    if request.headers.get('X-TEST-NO-RATE-LIMIT-KEY') == Settings.TEST_NO_RATE_LIMIT_KEY:
+    # No-rate-limit test key bypass. Off when no key is configured, so an empty
+    # header can't match an empty key.
+    if Settings.TEST_NO_RATE_LIMIT_KEY and \
+            request.headers.get('X-TEST-NO-RATE-LIMIT-KEY') == Settings.TEST_NO_RATE_LIMIT_KEY:
         request.state.rate_limit_stats = None
         return None
 
