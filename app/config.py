@@ -17,7 +17,7 @@ import os
 
 class Settings:
     VERSION = '1.0.0'
-    GROUP = os.environ.get('GROUP', 'local')
+    GROUP = os.environ.get('GROUP', 'prod')
 
     _root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
