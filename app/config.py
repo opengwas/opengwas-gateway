@@ -5,8 +5,9 @@ Reads from the same vault/app_conf.json used by the existing monolith so the
 gateway can share the same secrets infrastructure during the transition.
 
 Required keys (under the 'local' / 'production' section):
-  data_api      — {'url': ..., 'key': ...}; the key is sent upstream as a
-                  Bearer token (the data API has its own, separate JWT system)
+  data_api      — {'url': ..., 'key': ..., 'service_uuid': ...}; the key is sent
+                  upstream as a Bearer token (the data API has its own, separate
+                  JWT system); service_uuid is the X-OGDB-User for service-key calls
   service_keys  — {component_name: key}; other components (not end users) send
                   one of these in the X-Service-Key header to call the gateway
 """
@@ -39,6 +40,9 @@ class Settings:
     # Static token the data API accepts from the gateway. Unrelated to user JWTs
     # validated above — those are never forwarded upstream.
     DATA_API_KEY: str = app_config['data_api']['key']
+
+    # The user the data API counts service-key requests against (X-OGDB-User).
+    DATA_API_SERVICE_UUID: str = app_config['data_api']['service_uuid']
 
     # ── Service keys ──────────────────────────────────────────────────────────
     # Keys for internal components calling the gateway (not used by end users).

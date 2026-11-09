@@ -37,6 +37,8 @@ _HOP_BY_HOP = frozenset({
     'content-length',
     # Service keys authenticate callers to the gateway only — never pass them on.
     'x-service-key',
+    # The data API trusts this under the gateway's key, so only the gateway sets it.
+    'x-ogdb-user',
 })
 
 
@@ -46,6 +48,11 @@ def _forward_headers(request: Request) -> dict[str, str]:
         if k.lower() not in _HOP_BY_HOP and k.lower() != 'authorization'
     }
     headers['Authorization'] = f"Bearer {Settings.DATA_API_KEY}"
+    user = getattr(request.state, 'user', None)
+    if user and user.get('uuid'):
+        headers['X-OGDB-User'] = user['uuid']
+    elif getattr(request.state, 'service', None) and Settings.DATA_API_SERVICE_UUID:
+        headers['X-OGDB-User'] = Settings.DATA_API_SERVICE_UUID
     return headers
 
 
