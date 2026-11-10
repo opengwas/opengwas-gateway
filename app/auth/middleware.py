@@ -6,7 +6,8 @@ Runs before every request. On success it sets:
   request.state.source    — {'client': str, 'version': str} parsed from X-API-SOURCE
   request.state.service   — name of the calling component, if a service key was used
 
-Requests to /probe/* are passed through unauthenticated.
+Requests to /probe/*, the service index (/), /docs and each service's
+/{namespace}/openapi.json are passed through unauthenticated.
 
 Service-key auth (internal components, not end users):
   X-Service-Key: <key>  →  accepted if it matches any key in Settings.SERVICE_KEYS
@@ -26,7 +27,10 @@ from app.auth.jwt import validate_token
 from app.auth.user import get_user_by_uid, get_user_tier
 
 
-_UNAUTHENTICATED_PATHS = {'/probe/health', '/probe/readiness', '/'}
+_UNAUTHENTICATED_PATHS = {
+    '/probe/health', '/probe/readiness', '/', '/docs',
+    *(f'/{ns}/openapi.json' for ns in Settings.BACKENDS),
+}
 
 
 def _parse_source_header(request: Request) -> dict:

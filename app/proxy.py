@@ -1,14 +1,14 @@
 """
-Reverse proxy to the data API.
+Reverse proxy to the backends (Settings.BACKENDS).
 
 Uses httpx streaming so large association payloads (potentially hundreds of MB)
-are never buffered in the gateway — bytes flow straight from the data API socket
+are never buffered in the gateway — bytes flow straight from the backend socket
 to the client socket.
 
 Request flow:
-  1. Build the upstream URL from DATA_API_URL + original path + query string.
+  1. The caller passes the backend and the upstream URL (backend url + path).
   2. Forward request headers, stripping hop-by-hop headers and X-Service-Key.
-     Replace the caller's Authorization with the gateway's own data API token.
+     Replace the caller's Authorization with the gateway's key for that backend.
   3. Stream the response body back to the client.
   4. Close the upstream connection in a BackgroundTask after streaming completes.
   5. Attach rate-limit headers (X-Allowance-*) to the response.
@@ -37,22 +37,23 @@ _HOP_BY_HOP = frozenset({
     'content-length',
     # Service keys authenticate callers to the gateway only — never pass them on.
     'x-service-key',
-    # The data API trusts this under the gateway's key, so only the gateway sets it.
+    # A backend trusts this under the gateway's key, so only the gateway sets it.
     'x-ogdb-user',
 })
 
 
-def _forward_headers(request: Request) -> dict[str, str]:
+def _forward_headers(request: Request, backend: dict) -> dict[str, str]:
     headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in _HOP_BY_HOP and k.lower() != 'authorization'
     }
-    headers['Authorization'] = f"Bearer {Settings.DATA_API_KEY}"
+    headers['Authorization'] = f"Bearer {backend['key']}"
+    # The user header is ogdb's contract (opengwas/ogdb-api#28), the only backend so far.
     user = getattr(request.state, 'user', None)
     if user and user.get('uuid'):
         headers['X-OGDB-User'] = user['uuid']
-    elif getattr(request.state, 'service', None) and Settings.DATA_API_SERVICE_UUID:
-        headers['X-OGDB-User'] = Settings.DATA_API_SERVICE_UUID
+    elif getattr(request.state, 'service', None) and backend['service_uuid']:
+        headers['X-OGDB-User'] = backend['service_uuid']
     return headers
 
 
@@ -63,23 +64,22 @@ def _get_remote_addr(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-async def proxy_request(request: Request, path: str) -> StreamingResponse:
+async def proxy_request(request: Request, backend: dict, upstream_url: str) -> StreamingResponse:
     """
-    Proxy the request to the data API and stream the response back.
+    Proxy the request to upstream_url (on the given backend) and stream the response back.
     Rate-limit headers and the usage log are attached/fired after the upstream
     response headers arrive but before the body starts streaming.
     """
     client: httpx.AsyncClient = request.app.state.http_client
     redis_log = request.app.state.redis_log
 
-    upstream_url = f"{Settings.DATA_API_URL}/{path}"
     t_start = time.monotonic()
 
     # Build the upstream request (don't send it yet — we want streaming).
     upstream_request = client.build_request(
         method=request.method,
         url=upstream_url,
-        headers=_forward_headers(request),
+        headers=_forward_headers(request, backend),
         params=request.query_params,
         content=request.stream(),
     )

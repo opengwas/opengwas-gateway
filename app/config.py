@@ -5,9 +5,10 @@ Reads from the same vault/app_conf.json used by the existing monolith so the
 gateway can share the same secrets infrastructure during the transition.
 
 Required keys (under the 'local' / 'production' section):
-  data_api      — {'url': ..., 'key': ..., 'service_uuid': ...}; the key is sent
-                  upstream as a Bearer token (the data API has its own, separate
-                  JWT system); service_uuid is the X-OGDB-User for service-key calls
+  backends      — {namespace: {'url': ..., 'key': ..., 'service_uuid': ...}}, one
+                  per service behind the gateway, e.g. 'ogdb'. url is the service's
+                  root; the key is sent upstream as a Bearer token (each service has
+                  its own auth); service_uuid is the user for service-key calls
   service_keys  — {component_name: key}; other components (not end users) send
                   one of these in the X-Service-Key header to call the gateway
 """
@@ -34,15 +35,19 @@ class Settings:
     JWT_VALIDITY = 14 * 86400   # seconds — must match UI service
     JWT_AUDIENCE = 'api.opengwas.io'
 
-    # ── Upstream data API ─────────────────────────────────────────────────────
-    DATA_API_URL: str = app_config['data_api']['url'].rstrip('/')
-
-    # Static token the data API accepts from the gateway. Unrelated to user JWTs
-    # validated above — those are never forwarded upstream.
-    DATA_API_KEY: str = app_config['data_api']['key']
-
-    # The user the data API counts service-key requests against (X-OGDB-User).
-    DATA_API_SERVICE_UUID: str = app_config['data_api']['service_uuid']
+    # ── Backends, by namespace ────────────────────────────────────────────────
+    # /{namespace}/{path} is proxied to the backend's url + /{path}.
+    #   key          — static token the backend accepts from the gateway. Unrelated
+    #                  to user JWTs, which are never forwarded upstream.
+    #   service_uuid — the user the backend counts service-key requests against.
+    BACKENDS: dict[str, dict] = {
+        ns: {
+            'url': backend['url'].rstrip('/'),
+            'key': backend['key'],
+            'service_uuid': backend['service_uuid'],
+        }
+        for ns, backend in app_config['backends'].items()
+    }
 
     # ── Service keys ──────────────────────────────────────────────────────────
     # Keys for internal components calling the gateway (not used by end users).

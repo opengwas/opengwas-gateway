@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 import httpx
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Request
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
 from neo4j import AsyncGraphDatabase
 
@@ -78,7 +79,8 @@ async def lifespan(app: FastAPI):
         follow_redirects=False,
     )
 
-    logger.info("Gateway ready. Data API upstream: %s", Settings.DATA_API_URL)
+    logger.info("Gateway ready. Backends: %s",
+                {ns: b['url'] for ns, b in Settings.BACKENDS.items()})
 
     yield
 
@@ -95,8 +97,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title='OpenGWAS Gateway',
     version=Settings.VERSION,
-    # Disable the auto-generated docs on the gateway itself — the data API's
-    # Swagger UI is what clients should use.
+    # The gateway's own spec and docs are off: /openapi.json and /docs below
+    # serve the data API's spec instead.
+    openapi_url=None,
     docs_url=None,
     redoc_url=None,
     lifespan=lifespan,
@@ -132,15 +135,81 @@ async def probe_readiness(request: Request):
         return JSONResponse({'message': 'Gateway not ready'}, status_code=503)
 
 
-# ── API proxy (all methods, all paths under /api/) ────────────────────────────
+# ── Service index, specs and docs (no auth) ───────────────────────────────────
 
-@app.api_route('/api/{path:path}', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
-async def api_proxy(request: Request, path: str):
+@app.get('/', include_in_schema=False)
+async def index():
+    """List the services behind the gateway, with their prefixes, specs and docs."""
+    return {
+        'gateway': {'version': Settings.VERSION},
+        'services': [
+            {
+                'name': ns,
+                'prefix': f'/{ns}',
+                'spec': f'/{ns}/openapi.json',
+                'docs': f'/docs?service={ns}',
+            }
+            for ns in Settings.BACKENDS
+        ],
+    }
+
+
+@app.get('/docs', include_in_schema=False)
+async def docs(service: str = next(iter(Settings.BACKENDS))):
+    if service not in Settings.BACKENDS:
+        return JSONResponse({'message': f'Unknown service {service!r}'}, status_code=404)
+    return get_swagger_ui_html(openapi_url=f'/{service}/openapi.json',
+                               title=f'OpenGWAS API: {service}')
+
+
+async def _rate_limit_and_proxy(request: Request, backend: dict, upstream_url: str):
     # Auth is already resolved by AuthMiddleware; request.state.user is set.
-
     # Rate limiting — returns a 429 response if the limit is exceeded.
     rate_limit_response = check_rate_limit(request)
     if rate_limit_response is not None:
         return rate_limit_response
+    return await proxy_request(request, backend, upstream_url)
 
-    return await proxy_request(request, path)
+
+# ── /api/* → ogdb's /api/* (as before; its future is undecided) ───────────────
+
+# Fails at startup if app_conf.json has no backends.ogdb.
+_API_BACKEND = Settings.BACKENDS['ogdb']
+
+
+@app.api_route('/api/{path:path}', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
+async def api_proxy(request: Request, path: str):
+    return await _rate_limit_and_proxy(request, _API_BACKEND, f"{_API_BACKEND['url']}/api/{path}")
+
+
+# ── Namespaced services: /{namespace}/... ─────────────────────────────────────
+
+# Each backend's spec, fetched once and cached; restart to refresh.
+_specs: dict[str, dict] = {}
+
+
+@app.get('/{namespace}/openapi.json', include_in_schema=False)
+async def service_spec(request: Request, namespace: str):
+    backend = Settings.BACKENDS.get(namespace)
+    if backend is None:
+        return JSONResponse({'message': f'Unknown service {namespace!r}'}, status_code=404)
+    if namespace not in _specs:
+        try:
+            response = await request.app.state.http_client.get(f"{backend['url']}/openapi.json")
+            response.raise_for_status()
+            spec = response.json()
+        except Exception as exc:
+            logger.error("Fetching the %s spec failed: %s", namespace, exc)
+            return JSONResponse({'message': 'API specification unavailable'}, status_code=502)
+        # Calls from the docs go through the gateway, under the namespace.
+        spec['servers'] = [{'url': f'/{namespace}'}]
+        _specs[namespace] = spec
+    return _specs[namespace]
+
+
+@app.api_route('/{namespace}/{path:path}', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
+async def service_proxy(request: Request, namespace: str, path: str):
+    backend = Settings.BACKENDS.get(namespace)
+    if backend is None:
+        return JSONResponse({'message': 'Not found'}, status_code=404)
+    return await _rate_limit_and_proxy(request, backend, f"{backend['url']}/{path}")
