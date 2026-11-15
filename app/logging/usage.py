@@ -20,6 +20,7 @@ Key additions over the legacy format:
   • user.tier for per-tier analytics
   • request.source_client / source_version from X-API-SOURCE header
   • gateway.version for correlating log format changes across deploys
+  • request.id, the X-Request-ID also sent to the backend, to join the two logs
 """
 
 import asyncio
@@ -54,6 +55,7 @@ def _anonymize_ip(ip_str: str | None) -> str | None:
 
 def _build_event(
     *,
+    request_id: str,
     uid: str | None,
     tier: str | None,
     remote_addr: str | None,
@@ -72,6 +74,7 @@ def _build_event(
         '@timestamp': time.strftime('%Y-%m-%dT%H:%M:%S.', time.gmtime())
                       + f"{int(time.time() * 1000) % 1000:03d}Z",
         'request': {
+            'id': request_id,
             'method': method,
             'path': path,
             'query': query_string,
@@ -106,6 +109,7 @@ async def _publish(redis_client: Redis, event: dict) -> None:
 def log_usage(
     redis_client: Redis,
     *,
+    request_id: str,
     uid: str | None,
     tier: str | None,
     remote_addr: str | None,
@@ -125,6 +129,7 @@ def log_usage(
     Safe to call from a BackgroundTask or directly from a route handler.
     """
     event = _build_event(
+        request_id=request_id,
         uid=uid,
         tier=tier,
         remote_addr=remote_addr,

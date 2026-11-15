@@ -9,13 +9,17 @@ Request flow:
   1. The caller passes the backend and the upstream URL (backend url + path).
   2. Forward request headers, stripping hop-by-hop headers and X-Service-Key.
      Replace the caller's Authorization with the gateway's key for that backend.
+     Send an X-Request-ID (the client's if valid, else a new one), and return it
+     to the client and in the usage log, so both sides' logs can be joined.
   3. Stream the response body back to the client.
   4. Close the upstream connection in a BackgroundTask after streaming completes.
   5. Attach rate-limit headers (X-Allowance-*) to the response.
   6. Fire the usage log event (also in a BackgroundTask — never blocks the client).
 """
 
+import re
 import time
+import uuid
 
 import httpx
 from fastapi import Request
@@ -39,15 +43,28 @@ _HOP_BY_HOP = frozenset({
     'x-service-key',
     # A backend trusts this under the gateway's key, so only the gateway sets it.
     'x-ogdb-user',
+    # Set by the gateway on the upstream request and the response (see _request_id).
+    'x-request-id',
 })
 
 
-def _forward_headers(request: Request, backend: dict) -> dict[str, str]:
+# The Data API's X-Request-ID format (opengwas/ogdb-api#28).
+_REQUEST_ID = re.compile(r'^[A-Za-z0-9._:-]{1,128}$')
+
+
+def _request_id(request: Request) -> str:
+    """The client's X-Request-ID if the Data API would accept it, else a new one."""
+    request_id = request.headers.get('X-Request-ID', '')
+    return request_id if _REQUEST_ID.match(request_id) else uuid.uuid4().hex
+
+
+def _forward_headers(request: Request, backend: dict, request_id: str) -> dict[str, str]:
     headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in _HOP_BY_HOP and k.lower() != 'authorization'
     }
     headers['Authorization'] = f"Bearer {backend['key']}"
+    headers['X-Request-ID'] = request_id
     # The user header is ogdb's contract (opengwas/ogdb-api#28), the only backend so far.
     user = getattr(request.state, 'user', None)
     if user and user.get('uuid'):
@@ -74,12 +91,13 @@ async def proxy_request(request: Request, backend: dict, upstream_url: str) -> S
     redis_log = request.app.state.redis_log
 
     t_start = time.monotonic()
+    request_id = _request_id(request)
 
     # Build the upstream request (don't send it yet — we want streaming).
     upstream_request = client.build_request(
         method=request.method,
         url=upstream_url,
-        headers=_forward_headers(request, backend),
+        headers=_forward_headers(request, backend, request_id),
         params=request.query_params,
         content=request.stream(),
     )
@@ -94,6 +112,7 @@ async def proxy_request(request: Request, backend: dict, upstream_url: str) -> S
 
     log_usage(
         redis_log,
+        request_id=request_id,
         uid=user['uid'] if user else None,
         tier=user.get('_tier') if user else None,
         remote_addr=_get_remote_addr(request),
@@ -116,6 +135,7 @@ async def proxy_request(request: Request, backend: dict, upstream_url: str) -> S
         k: v for k, v in response.headers.items()
         if k.lower() not in _HOP_BY_HOP
     }
+    response_headers['X-Request-ID'] = request_id
     response_headers.update(get_allowance_headers(request))
 
     # ── Stream body ────────────────────────────────────────────────────────────
