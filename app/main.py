@@ -2,7 +2,7 @@
 OpenGWAS Gateway — FastAPI entry point.
 
 Responsibilities:
-  • Authenticate every /api/* request (JWT → Neo4j user lookup).
+  • Authenticate every /{namespace}/* request (JWT → Neo4j user lookup).
   • Apply tier-based rate limiting via Redis.
   • Proxy authorised requests to the data API (streaming).
   • Publish a usage log event to Redis pub/sub (→ Logstash → ES).
@@ -169,17 +169,6 @@ async def _rate_limit_and_proxy(request: Request, backend: dict, upstream_url: s
     if rate_limit_response is not None:
         return rate_limit_response
     return await proxy_request(request, backend, upstream_url)
-
-
-# ── /api/* → ogdb's /api/* (as before; its future is undecided) ───────────────
-
-# Fails at startup if app_conf.json has no backends.ogdb.
-_API_BACKEND = Settings.BACKENDS['ogdb']
-
-
-@app.api_route('/api/{path:path}', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
-async def api_proxy(request: Request, path: str):
-    return await _rate_limit_and_proxy(request, _API_BACKEND, f"{_API_BACKEND['url']}/api/{path}")
 
 
 # ── Namespaced services: /{namespace}/... ─────────────────────────────────────
