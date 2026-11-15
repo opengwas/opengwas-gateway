@@ -187,6 +187,38 @@ async def api_proxy(request: Request, path: str):
 # Each backend's spec, fetched once and cached; restart to refresh.
 _specs: dict[str, dict] = {}
 
+_ALLOWANCE_HEADERS = {
+    'X-Allowance-Limit': {'description': "The user's allowance per window.",
+                          'schema': {'type': 'integer'}},
+    'X-Allowance-Remaining': {'description': 'What is left of it in the current window.',
+                              'schema': {'type': 'integer'}},
+    'X-Allowance-Reset': {'description': 'When the window resets, in Unix seconds.',
+                          'schema': {'type': 'integer'}},
+}
+_HTTP_METHODS = {'get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'}
+
+
+def _add_rate_limiting(spec: dict) -> None:
+    """Document what the gateway adds: X-Allowance-* on every response, and 429."""
+    components = spec.setdefault('components', {})
+    components.setdefault('headers', {}).update(_ALLOWANCE_HEADERS)
+    refs = {name: {'$ref': f'#/components/headers/{name}'} for name in _ALLOWANCE_HEADERS}
+    components.setdefault('responses', {})['TooManyRequests'] = {
+        'description': "The user's allowance is used up until X-Allowance-Reset.",
+        'headers': refs,
+        'content': {'application/json': {'schema': {
+            'type': 'object', 'properties': {'message': {'type': 'string'}}}}},
+    }
+    for path_item in spec.get('paths', {}).values():
+        for method, operation in path_item.items():
+            if method not in _HTTP_METHODS:
+                continue
+            responses = operation.setdefault('responses', {})
+            for response in responses.values():
+                if '$ref' not in response:
+                    response.setdefault('headers', {}).update(refs)
+            responses['429'] = {'$ref': '#/components/responses/TooManyRequests'}
+
 
 @app.get('/{namespace}/openapi.json', include_in_schema=False)
 async def service_spec(request: Request, namespace: str):
@@ -203,6 +235,7 @@ async def service_spec(request: Request, namespace: str):
             return JSONResponse({'message': 'API specification unavailable'}, status_code=502)
         # Calls from the docs go through the gateway, under the namespace.
         spec['servers'] = [{'url': f'/{namespace}'}]
+        _add_rate_limiting(spec)
         _specs[namespace] = spec
     return _specs[namespace]
 
