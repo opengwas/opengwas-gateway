@@ -113,6 +113,7 @@ async def proxy_request(request: Request, backend: dict, upstream_url: str) -> S
     log_usage(
         redis_log,
         request_id=request_id,
+        backend=backend['name'],
         uid=user['uid'] if user else None,
         tier=user.get('_tier') if user else None,
         remote_addr=_get_remote_addr(request),

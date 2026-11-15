@@ -21,6 +21,7 @@ Key additions over the legacy format:
   • request.source_client / source_version from X-API-SOURCE header
   • gateway.version for correlating log format changes across deploys
   • request.id, the X-Request-ID also sent to the backend, to join the two logs
+  • request.backend, the namespace of the backend the request went to
 """
 
 import asyncio
@@ -56,6 +57,7 @@ def _anonymize_ip(ip_str: str | None) -> str | None:
 def _build_event(
     *,
     request_id: str,
+    backend: str,
     uid: str | None,
     tier: str | None,
     remote_addr: str | None,
@@ -75,6 +77,7 @@ def _build_event(
                       + f"{int(time.time() * 1000) % 1000:03d}Z",
         'request': {
             'id': request_id,
+            'backend': backend,
             'method': method,
             'path': path,
             'query': query_string,
@@ -110,6 +113,7 @@ def log_usage(
     redis_client: Redis,
     *,
     request_id: str,
+    backend: str,
     uid: str | None,
     tier: str | None,
     remote_addr: str | None,
@@ -130,6 +134,7 @@ def log_usage(
     """
     event = _build_event(
         request_id=request_id,
+        backend=backend,
         uid=uid,
         tier=tier,
         remote_addr=remote_addr,

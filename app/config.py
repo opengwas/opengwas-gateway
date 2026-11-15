@@ -42,6 +42,7 @@ class Settings:
     #   service_uuid — the user the backend counts service-key requests against.
     BACKENDS: dict[str, dict] = {
         ns: {
+            'name': ns,
             'url': backend['url'].rstrip('/'),
             'key': backend['key'],
             'service_uuid': backend['service_uuid'],
