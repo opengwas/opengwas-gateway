@@ -11,6 +11,8 @@ Request flow:
      Replace the caller's Authorization with the gateway's key for that backend.
      Send an X-Request-ID (the client's if valid, else a new one), and return it
      to the client and in the usage log, so both sides' logs can be joined.
+     Send X-Forwarded-Prefix: /<namespace>, so the paths the backend returns
+     (job links, for ogdb) resolve through the gateway.
   3. Stream the response body back to the client.
   4. Close the upstream connection in a BackgroundTask after streaming completes.
   5. Attach rate-limit headers (X-Allowance-*) to the response.
@@ -45,6 +47,8 @@ _HOP_BY_HOP = frozenset({
     'x-ogdb-user',
     # Set by the gateway on the upstream request and the response (see _request_id).
     'x-request-id',
+    # Set by the gateway: the backend puts it in front of the paths it returns.
+    'x-forwarded-prefix',
 })
 
 
@@ -65,6 +69,8 @@ def _forward_headers(request: Request, backend: dict, request_id: str) -> dict[s
     }
     headers['Authorization'] = f"Bearer {backend['key']}"
     headers['X-Request-ID'] = request_id
+    # The backend's public prefix, so the paths it returns route through the gateway.
+    headers['X-Forwarded-Prefix'] = f"/{backend['name']}"
     # The user header is ogdb's contract (opengwas/ogdb-api#28), the only backend so far.
     user = getattr(request.state, 'user', None)
     if user and user.get('uuid'):
