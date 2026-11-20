@@ -22,6 +22,10 @@ Key additions over the legacy format:
   • gateway.version for correlating log format changes across deploys
   • request.id, the X-Request-ID also sent to the backend, to join the two logs
   • request.backend, the namespace of the backend the request went to
+  • cost, the cost the backend reported (shadow mode: logged, not charged):
+    estimate on a job's 202; job, cpu_ms, run_ms, queue_ms, attempts, rows and
+    bytes once it has finished, with first=true on the first event for that job.
+    Sum the first events for each job's cost. Null when nothing was reported.
 """
 
 import asyncio
@@ -71,6 +75,7 @@ def _build_event(
     status_code: int,
     response_size: int,
     duration_ms: float,
+    cost: dict | None,
 ) -> dict:
     return {
         '@timestamp': time.strftime('%Y-%m-%dT%H:%M:%S.', time.gmtime())
@@ -96,6 +101,7 @@ def _build_event(
             'size_bytes': response_size,
             'duration_ms': round(duration_ms, 1),
         },
+        'cost': cost,
         'gateway': {
             'version': Settings.VERSION,
         },
@@ -127,6 +133,7 @@ def log_usage(
     status_code: int,
     response_size: int,
     duration_ms: float,
+    cost: dict | None = None,
 ) -> None:
     """
     Schedule a non-blocking publish to the Redis pub/sub log channel.
@@ -148,5 +155,6 @@ def log_usage(
         status_code=status_code,
         response_size=response_size,
         duration_ms=duration_ms,
+        cost=cost,
     )
     asyncio.create_task(_publish(redis_client, event))

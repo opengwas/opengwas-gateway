@@ -17,8 +17,10 @@ Request flow:
   4. Close the upstream connection in a BackgroundTask after streaming completes.
   5. Attach rate-limit headers (X-Allowance-*) to the response.
   6. Fire the usage log event (also in a BackgroundTask — never blocks the client).
+     It records the cost the backend reports, in shadow mode: logged, not charged.
 """
 
+import logging
 import re
 import time
 import uuid
@@ -32,6 +34,7 @@ from app.config import Settings
 from app.limiting.limiter import get_allowance_headers
 from app.logging.usage import log_usage
 
+logger = logging.getLogger(__name__)
 
 # Headers that must not be forwarded between hops (RFC 7230 §6.1).
 _HOP_BY_HOP = frozenset({
@@ -80,6 +83,51 @@ def _forward_headers(request: Request, backend: dict, request_id: str) -> dict[s
     return headers
 
 
+# ── Cost, in shadow mode (opengwas/opengwas-gateway#2) ────────────────────────
+# ogdb reports a finished job's measured cost in X-OGDB-Cost, an RFC 8941
+# dictionary, on every status and result response for that job, and an estimate
+# in X-OGDB-Cost-Estimate on 202. The gateway only logs them for now.
+_COST_FIELDS = ('job', 'cpu_ms', 'run_ms', 'queue_ms', 'attempts', 'rows', 'bytes')
+_SF_MEMBER = re.compile(r'\s*([a-z*][a-z0-9_.*-]*)(?:=("(?:[^"\\]|\\.)*"|[^,;]*))?[^,]*(?:,|$)')
+_COST_SEEN_TTL = 7 * 86400   # seconds; longer than a finished job's result is kept
+
+
+def _parse_cost(value: str) -> dict:
+    """The known fields of an X-OGDB-Cost dictionary; anything else is skipped."""
+    cost = {}
+    for match in _SF_MEMBER.finditer(value):
+        key, raw = match.group(1), (match.group(2) or '').strip()
+        if key not in _COST_FIELDS:
+            continue
+        if raw.startswith('"'):
+            cost[key] = re.sub(r'\\(.)', r'\1', raw[1:-1])
+        elif re.fullmatch(r'-?\d+', raw):
+            cost[key] = int(raw)
+    return cost
+
+
+async def _reported_cost(request: Request, headers: httpx.Headers) -> dict | None:
+    """
+    The cost the backend reported for this response, or None. 'first' is True
+    the first time a job's measured cost is seen, so each job is counted once
+    however often it is polled or paged; None if Redis couldn't say.
+    """
+    cost = {}
+    estimate = headers.get('X-OGDB-Cost-Estimate', '').strip()
+    if estimate.isdigit():
+        cost['estimate'] = int(estimate)
+    measured = _parse_cost(headers.get('X-OGDB-Cost', ''))
+    if measured.get('job'):
+        cost.update(measured)
+        try:
+            cost['first'] = bool(await request.app.state.redis_limiter.set(
+                f"cost:job:{measured['job']}", 1, nx=True, ex=_COST_SEEN_TTL))
+        except Exception as exc:
+            logger.warning("Failed to record the cost of job %s: %s", measured['job'], exc)
+            cost['first'] = None
+    return cost or None
+
+
 def _get_remote_addr(request: Request) -> str | None:
     forwarded_for = request.headers.get('X-Forwarded-For', '')
     if forwarded_for:
@@ -111,6 +159,7 @@ async def proxy_request(request: Request, backend: dict, upstream_url: str) -> S
     response = await client.send(upstream_request, stream=True)
 
     duration_ms = (time.monotonic() - t_start) * 1000
+    cost = await _reported_cost(request, response.headers)
 
     # ── Usage logging (fire-and-forget) ───────────────────────────────────────
     user = getattr(request.state, 'user', None)
@@ -134,6 +183,7 @@ async def proxy_request(request: Request, backend: dict, upstream_url: str) -> S
         # Content-Length may not be present for chunked responses.
         response_size=int(response.headers.get('Content-Length', -1)),
         duration_ms=duration_ms,
+        cost=cost,
     )
 
     # ── Response headers ───────────────────────────────────────────────────────
