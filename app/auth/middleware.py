@@ -74,7 +74,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.headers.get('X-Service-Key'):
             service = _match_service_key(request)
             if service is None:
-                return JSONResponse({'message': 'Invalid service key.'}, status_code=401)
+                return JSONResponse({'error': 'unauthorized', 'message': 'Invalid service key.'},
+                                    status_code=401)
             request.state.service = service
             return await call_next(request)
 
@@ -94,7 +95,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         authorization = request.headers.get('Authorization', '')
         if not authorization:
             return JSONResponse(
-                {'message': 'Missing token. Provide a Bearer token in the Authorization header.'},
+                {'error': 'unauthorized',
+                 'message': 'Missing token. Provide a Bearer token in the Authorization header.'},
                 status_code=401,
             )
 
@@ -103,7 +105,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         except Exception as exc:
             detail = getattr(exc, 'detail', str(exc))
             code = getattr(exc, 'status_code', 401)
-            return JSONResponse({'message': detail}, status_code=code)
+            return JSONResponse({'error': 'unauthorized', 'message': detail}, status_code=code)
 
         request.state.user = user
         return await call_next(request)

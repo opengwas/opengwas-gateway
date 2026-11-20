@@ -157,7 +157,8 @@ async def index():
 @app.get('/docs', include_in_schema=False)
 async def docs(service: str = next(iter(Settings.BACKENDS))):
     if service not in Settings.BACKENDS:
-        return JSONResponse({'message': f'Unknown service {service!r}'}, status_code=404)
+        return JSONResponse({'error': 'not_found', 'message': f'Unknown service {service!r}'},
+                            status_code=404)
     return get_swagger_ui_html(openapi_url=f'/{service}/openapi.json',
                                title=f'OpenGWAS API: {service}')
 
@@ -196,7 +197,9 @@ def _add_rate_limiting(spec: dict) -> None:
         'description': "The user's allowance is used up until X-Allowance-Reset.",
         'headers': refs,
         'content': {'application/json': {'schema': {
-            'type': 'object', 'properties': {'message': {'type': 'string'}}}}},
+            'type': 'object', 'required': ['error', 'message'], 'properties': {
+                'error': {'type': 'string', 'example': 'rate_limited'},
+                'message': {'type': 'string'}}}}},
     }
     for path_item in spec.get('paths', {}).values():
         for method, operation in path_item.items():
@@ -213,7 +216,8 @@ def _add_rate_limiting(spec: dict) -> None:
 async def service_spec(request: Request, namespace: str):
     backend = Settings.BACKENDS.get(namespace)
     if backend is None:
-        return JSONResponse({'message': f'Unknown service {namespace!r}'}, status_code=404)
+        return JSONResponse({'error': 'not_found', 'message': f'Unknown service {namespace!r}'},
+                            status_code=404)
     if namespace not in _specs:
         try:
             response = await request.app.state.http_client.get(f"{backend['url']}/openapi.json")
@@ -221,7 +225,8 @@ async def service_spec(request: Request, namespace: str):
             spec = response.json()
         except Exception as exc:
             logger.error("Fetching the %s spec failed: %s", namespace, exc)
-            return JSONResponse({'message': 'API specification unavailable'}, status_code=502)
+            return JSONResponse({'error': 'spec_unavailable',
+                                 'message': 'API specification unavailable'}, status_code=502)
         # Calls from the docs go through the gateway, under the namespace.
         spec['servers'] = [{'url': f'/{namespace}'}]
         _add_rate_limiting(spec)
@@ -233,5 +238,5 @@ async def service_spec(request: Request, namespace: str):
 async def service_proxy(request: Request, namespace: str, path: str):
     backend = Settings.BACKENDS.get(namespace)
     if backend is None:
-        return JSONResponse({'message': 'Not found'}, status_code=404)
+        return JSONResponse({'error': 'not_found', 'message': 'Not found'}, status_code=404)
     return await _rate_limit_and_proxy(request, backend, f"{backend['url']}/{path}")

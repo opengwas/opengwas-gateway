@@ -125,6 +125,7 @@ def check_rate_limit(request: Request) -> JSONResponse | None:
     if not allowed:
         return JSONResponse(
             {
+                'error': 'rate_limited',
                 'message': (
                     f"Too many requests. Allowance: {limit_string}. "
                     f"Please try again after {_format_reset_time(stats.reset_time)}."
