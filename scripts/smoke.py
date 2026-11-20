@@ -11,7 +11,7 @@ Credentials are read from the environment only and never printed. Either may
 be left out; the checks that need it are then skipped. It checks one request
 of each kind, not every endpoint: the gateway routes every path the same way.
 
-  public   the service index, the served spec and docs, and 401 without a token
+  public   the service index, the served spec and docs, and the gateway's 401s
   status   X-Request-ID round trip; X-Allowance-* present and counting (JWT)
   user     /api/user says the role is 'gateway'
   catalog  /api/gwasinfo answers at once
@@ -95,10 +95,14 @@ def check_public(client: httpx.Client, r: Results) -> None:
     r.check('public', 'docs page', resp.status_code == 200 and 'swagger' in resp.text.lower(),
             resp.status_code)
 
-    resp = client.get(f'{PREFIX}/api/status')
-    r.check('public', '401 without a token', resp.status_code == 401, resp.status_code)
-    resp = client.get(f'{PREFIX}/api/status', headers={'Authorization': 'Bearer not-a-jwt'})
-    r.check('public', '401 with a bad token', resp.status_code == 401, resp.status_code)
+    for label, headers in [('without a token', {}),
+                           ('with a bad token', {'Authorization': 'Bearer not-a-jwt'}),
+                           ('with a bad service key', {'X-Service-Key': 'not-a-key'})]:
+        resp = client.get(f'{PREFIX}/api/status', headers=headers)
+        error = _json(resp)
+        r.check('public', f'401 {label}, with error and message',
+                resp.status_code == 401 and error.get('error') == 'unauthorized'
+                and 'message' in error, f"{resp.status_code} {error.get('error')}")
 
 
 def check_status(client: httpx.Client, r: Results, mode: str, limited: bool) -> None:
